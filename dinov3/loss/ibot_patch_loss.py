@@ -4,6 +4,7 @@
 # the terms of the DINOv3 License Agreement.
 
 import math
+import sys
 
 import torch
 import torch.distributed as dist
@@ -69,7 +70,10 @@ class iBOTPatchLoss(nn.Module):
         self.len_teacher_patch_tokens = None
         self.async_batch_center = None
         self.sinkhorn_knopp_teacher = SinkhornKnoppTeacher()
-        self.sinkhorn_knopp_teacher.compile()
+        # Native Windows PyTorch usually has no Triton backend, so compiling
+        # this helper would fail through the Inductor scheduler.
+        if sys.platform != "win32":
+            self.sinkhorn_knopp_teacher.compile()
 
     def init_weights(self) -> None:
         self.center.zero_()
