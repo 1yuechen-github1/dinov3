@@ -261,7 +261,12 @@ def enable_distributed(
     if set_cuda_current_device:
         torch.cuda.set_device(torch_env.local_rank)
 
-    dist.init_process_group(backend="nccl", timeout=timeout)
+    # NCCL is unavailable in the official Windows PyTorch builds.  Keep NCCL
+    # for Linux/CUDA installations, but fall back to Gloo when NCCL is not
+    # compiled in (for example, single-process debugging on Windows).
+    backend = "nccl" if dist.is_nccl_available() else "gloo"
+    logger.info("Initializing process group with backend=%s", backend)
+    dist.init_process_group(backend=backend, timeout=timeout)
     dist.barrier()
 
     if restrict_print_to_main_process:
