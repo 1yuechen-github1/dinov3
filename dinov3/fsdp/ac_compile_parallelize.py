@@ -4,6 +4,7 @@
 # the terms of the DINOv3 License Agreement.
 
 import logging
+import sys
 from functools import partial
 from typing import Any, Dict, List
 
@@ -173,7 +174,13 @@ def ac_compile_parallelize(
         all_pgs = [trained_model_process_group] + [None] * len(inference_only_models_process_groups)
     else:
         all_pgs = [trained_model_process_group] + inference_only_models_process_groups
-    if cfg.train.compile:
+    # PyTorch Inductor's CUDA backend requires Triton, which is not supported
+    # by the standard native-Windows PyTorch setup. Always use eager mode on
+    # Windows even if an imported configuration enables compilation.
+    compile_enabled = cfg.train.compile and sys.platform != "win32"
+    if cfg.train.compile and not compile_enabled:
+        logger.warning("torch.compile is disabled on Windows because Triton is unavailable")
+    if compile_enabled:
         for model in all_models:
             for k in model.keys():
                 if k == "backbone":
