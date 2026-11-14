@@ -4,6 +4,66 @@
 
 不把“加载官方权重做推理”、ImageNet 评测、ADE20K/NYUv2 评测和 SLURM 集群复现当作你的主流程；这些内容与“用自己的数据训练”不是一回事。
 
+## 0. 环境搭建
+
+本节只写安装方法，不会替你执行安装。官方代码主要按 Linux/WSL2 开发；Windows 原生可用于尝试，但训练时优先使用 WSL2 Ubuntu。
+
+### 0.1 推荐版本
+
+- Python 3.11（推荐使用 conda 或 micromamba）
+- PyTorch 2.7.1 或更高版本
+- 有 NVIDIA GPU 时安装与驱动匹配的 CUDA 版 PyTorch
+- 训练 ViT-L/16 建议使用 Linux/WSL2 和多 GPU；单卡适合先做短时间 smoke test
+
+### 0.2 使用 conda/micromamba（推荐）
+
+在仓库根目录（能看到 `conda.yaml` 的目录）执行：
+
+```bash
+micromamba env create -f conda.yaml
+micromamba activate dinov3
+```
+
+如果使用 conda：
+
+```bash
+conda env create -f conda.yaml
+conda activate dinov3
+```
+
+### 0.3 使用已有 Python 环境
+
+先确认 Python 版本，再安装依赖：
+
+```bash
+python --version
+python -m pip install --upgrade pip
+python -m pip install torch torchvision
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
+
+`torch` 和 `torchvision` 最好按照 PyTorch 官网给出的 CUDA 命令安装；不要在已经装好 CUDA 版 PyTorch 后又随意覆盖成 CPU 版。
+
+### 0.4 Windows PowerShell
+
+如果不使用 WSL2，命令写法如下：
+
+```powershell
+python -m pip install torch torchvision
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
+
+验证环境：
+
+```powershell
+python -c "import torch; print(torch.__version__); print('cuda:', torch.cuda.is_available())"
+python -c "import dinov3; print('dinov3 import ok')"
+```
+
+看到 `dinov3 import ok` 且 `cuda: True`（有 NVIDIA GPU 时）才适合开始训练。环境安装失败时先解决安装问题，不要直接修改训练代码。
+
 ## 先说清楚：仓库代码能做什么
 
 仓库已经包含 DINOv3 的 ViT、teacher-student 自监督训练器、数据加载器和评估代码。训练入口是：
