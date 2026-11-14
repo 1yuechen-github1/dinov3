@@ -510,9 +510,10 @@ def do_train(cfg, model, resume=False):
         )
         torch.distributed.all_reduce(
             metrics_values,
-            op=torch.distributed.ReduceOp.AVG,
+            op=torch.distributed.ReduceOp.SUM,
             group=distributed.get_process_subgroup(),
         )
+        metrics_values /= distributed.get_subgroup_size()
         metrics_dict = dict(zip(metrics_dict.keys(), metrics_values))
         if total_loss_all_ranks.isnan().any():
             consecutive_nan_count += 1
