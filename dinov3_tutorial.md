@@ -45,21 +45,19 @@ DINOv3 自监督预训练 ViT-L/16
 
 ## 第一阶段：自己的数据做自监督预训练
 
-### 1. 数据组织
+### 1. 数据组织（你的情况：A）
 
-推荐先把无标注图片整理成按类别目录的形式（类别名在预训练阶段不会参与 loss）：
+你的图片全部直接放在同一个文件夹，不需要类别子目录：
 
 ```text
 my_pretrain_data/
-├── train/
-│   ├── group_000/
-│   │   ├── a.jpg
-│   │   └── b.jpg
-│   └── group_001/
-│       └── c.jpg
+├── img001.jpg
+├── img002.jpg
+├── img003.png
+└── img004.jpeg
 ```
 
-如果你的图片没有类别，也可以全部放在一个目录；但需要为本项目写一个简单 Dataset，返回图片张量即可。不要把自己的数据硬套成 ImageNet 的 `.npy` 元数据，除非你的目录和 ImageNet 格式完全一致。
+可以有多个层级的子目录，但不是必须的。预训练阶段不读取文件名和类别标签，只读取图片本身。支持 `.jpg`、`.jpeg`、`.png`、`.bmp`、`.webp`、`.tif`、`.tiff`。
 
 ### 2. 数据加载器
 
@@ -70,13 +68,13 @@ dinov3/data/loaders.py
 dinov3/data/datasets/
 ```
 
-`ImageNet`、`ImageNet22k` 等类是为官方数据布局写的。对自己的数据，建议新增一个 Dataset 类，例如 `dinov3/data/datasets/my_dataset.py`，并在 `dinov3/data/datasets/__init__.py` 和 `dinov3/data/loaders.py` 注册，使下面的字符串可以被解析：
+仓库现在已经提供了 `ImageFolder`，用于递归读取普通图片文件夹；它不读取类别标签，正适合自监督预训练。代码位于 `dinov3/data/datasets/image_folder.py`，并已在 `dinov3/data/loaders.py` 注册。
 
 ```text
-MyDataset:split=TRAIN:root=D:/data/my_pretrain
+ImageFolder:root=D:/data/my_pretrain
 ```
 
-Dataset 至少要返回训练器需要的图像样本；DINO 的多裁剪增强由训练数据管线负责。
+支持 `.jpg`、`.jpeg`、`.png`、`.bmp`、`.webp`、`.tif`、`.tiff`，会递归扫描所有子目录。DINO 的多裁剪增强由训练数据管线负责。
 
 ### 3. 训练配置
 
@@ -104,8 +102,19 @@ dinov3/configs/train/vitl_im1k_lin834.yaml
 python dinov3/train/train.py \
   --config-file dinov3/configs/train/my_vitl16.yaml \
   --output-dir <输出目录> \
-  train.dataset_path=MyDataset:split=TRAIN:root=<自己的数据目录>
+  train.dataset_path=ImageFolder:root=<自己的数据目录>
 ```
+
+例如你的图片在 `D:\data\my_pretrain`，Windows PowerShell 命令是：
+
+```powershell
+python dinov3/train/train.py `
+  --config-file dinov3/configs/train/my_vitl16.yaml `
+  --output-dir D:/dinov3_runs/vitl16_pretrain `
+  train.dataset_path=ImageFolder:root=D:/data/my_pretrain
+```
+
+注意：路径中不要再写 `:split=TRAIN`，因为这种图片文件夹数据集没有预定义的 TRAIN/VAL 划分。若以后需要验证集，应分别准备两个目录并启动两个数据集配置。
 
 单机多卡时使用 `torchrun` 启动同一个训练入口；`dinov3.run.submit` 是给 submitit/SLURM 集群提交任务的，不是本地训练的必要步骤。
 

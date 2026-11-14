@@ -10,7 +10,7 @@ from typing import Any, Callable, List, Optional, TypeVar
 import torch
 from torch.utils.data import Sampler
 
-from .datasets import ADE20K, CocoCaptions, ImageNet, ImageNet22k, NYU
+from .datasets import ADE20K, CocoCaptions, ImageFolder, ImageNet, ImageNet22k, NYU
 from .samplers import EpochSampler, InfiniteSampler, ShardedInfiniteSampler
 
 logger = logging.getLogger("dinov3")
@@ -49,10 +49,21 @@ def _parse_dataset_str(dataset_str: str):
     name = tokens[0]
     kwargs = {}
 
-    for token in tokens[1:]:
-        key, value = token.split("=")
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        # Windows drive letters introduce an extra ':' (e.g. root=C:/data).
+        if "=" not in token:
+            if not kwargs:
+                raise ValueError(f"Invalid dataset string: {dataset_str}")
+            last_key = next(reversed(kwargs))
+            kwargs[last_key] += ":" + token
+            i += 1
+            continue
+        key, value = token.split("=", 1)
         assert key in ("root", "extra", "split")
         kwargs[key] = value
+        i += 1
 
     if name == "ImageNet":
         class_ = ImageNet
@@ -72,6 +83,8 @@ def _parse_dataset_str(dataset_str: str):
         class_ = NYU
         if "split" in kwargs:
             kwargs["split"] = NYU.Split[kwargs["split"]]
+    elif name == "ImageFolder":
+        class_ = ImageFolder
     else:
         raise ValueError(f'Unsupported dataset "{name}"')
 
