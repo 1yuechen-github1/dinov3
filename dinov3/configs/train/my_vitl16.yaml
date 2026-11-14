@@ -50,7 +50,9 @@ train:
   output_dir: "D:/dinov3_runs/vitl16_pretrain"
   saveckp_freq: 20
   seed: 0
-  num_workers: 4
+  # Windows uses multiprocessing "spawn" and cannot pickle the local lambda
+  # currently used by DINOv3's data-loader builder. Keep loading in-process.
+  num_workers: 0
   OFFICIAL_EPOCH_LENGTH: 1000
   monitor_gradient_norm: false
   chunk_schedule: []
