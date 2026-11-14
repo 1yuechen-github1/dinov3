@@ -501,7 +501,7 @@ def do_train(cfg, model, resume=False):
         total_loss_all_ranks = total_loss.new_empty(distributed.get_subgroup_size())
         torch.distributed.all_gather_into_tensor(
             total_loss_all_ranks,
-            total_loss.detach(),
+            total_loss.detach().reshape(1),
             group=distributed.get_process_subgroup(),
         )
         total_loss = total_loss_all_ranks.mean()
