@@ -1,0 +1,73 @@
+# dinov3/configs/eval/linear_vitl16_custom.yaml
+# 冻结 ViT-L/16，仅训练分类头
+
+model:
+  # 必须保持与预训练时的模型结构一致
+  config_file: "dinov3/configs/train/pretrain_vitl16.yaml"
+
+  # 替换成预训练导出的 teacher/student backbone 权重
+  # 这里应当是单个 .pth 文件，不是整个 checkpoint 文件夹
+  pretrained_weights: "D:/dinov3_runs/vitl16_pretrain/eval/training_99999/teacher_checkpoint.pth"
+
+  dino_hub: null
+
+train:
+  # 建议把数据拆分成 train 和 val
+  dataset: "ImageFolder:root=G:/CY-SPACE/Dinov3/dataset/finetune/train"
+  val_dataset: "ImageFolder:root=G:/CY-SPACE/Dinov3/dataset/finetune/val"
+
+  val_metric_type: MEAN_ACCURACY
+
+  # 每张卡的 batch；线性微调的显存占用明显低于完整微调
+  batch_size: 32
+  num_workers: 0
+
+  # 同时测试这些学习率，最终选择验证集效果最好的分类头
+  learning_rates:
+    - 0.00001
+    - 0.00002
+    - 0.00005
+    - 0.0001
+    - 0.0002
+    - 0.0005
+    - 0.001
+
+  # 使用最后一个 Transformer block 的输出
+  n_last_blocks_list:
+    - 1
+
+  loss_type: CROSS_ENTROPY
+  optimizer_type: ADAMW
+  scheduler_type: COSINE_ANNEALING
+
+  epochs: 50
+
+  # 每个 epoch 的 iteration 数。
+  # 最好设置为：ceil(训练图片数 / batch_size)
+  epoch_length: 100
+
+  # 每 100 iteration 保存和验证一次
+  save_checkpoint_iterations: 100
+  eval_period_iterations: 100
+
+  checkpoint_retention_policy: LAST
+  resume: true
+  classifier_fpath: null
+
+eval:
+  test_datasets: []
+  test_metric_types: []
+  batch_size: 64
+  num_workers: 0
+
+transform:
+  resize_size: 256
+  crop_size: 224
+
+few_shot:
+  enable: false
+  k_or_percent: null
+  n_tries: 1
+
+save_results: true
+output_dir: "D:/dinov3_runs/vitl16_linear_finetune"
