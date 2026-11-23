@@ -72,7 +72,7 @@ student:
   drop_path_rate: 0.3
   layerscale: 1.0e-05
   patch_drop: 0.0
-  pretrained_weights: ""
+  pretrained_weights: "dataset/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
   ffn_layer: mlp
   ffn_ratio: 4.0
   resume_from_teacher_chkpt: ""
@@ -157,6 +157,5 @@ evaluation:
     low_freq: benchmark_low_frequency.yaml
 
 checkpointing:
-  period: 1000
-  max_to_keep: 3
-  keep_every: 10000
+  period: 100
+  max_to_keep: 1
