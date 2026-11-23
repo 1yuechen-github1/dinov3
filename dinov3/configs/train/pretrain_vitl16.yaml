@@ -45,7 +45,7 @@ gram:
   compute_stats: false
 
 train:
-  batch_size_per_gpu: 2
+  batch_size_per_gpu: 1
   dataset_path: "ImageFolder:root=G:/CY-SPACE/Dinov3/dataset/train"
   output_dir: "D:/dinov3_runs/vitl16_pretrain"
   saveckp_freq: 20
@@ -60,7 +60,7 @@ train:
   use_teacher_head: true
   learn_from_teacher_tokens: false
   centering: sinkhorn_knopp
-  checkpointing: true
+  checkpointing: false
   checkpointing_full: false
   compile: false
   cudagraphs: false
