@@ -561,6 +561,9 @@ def do_train(cfg, model, resume=False):
 
         # Checkpointing
         if (iteration + 1) % cfg.checkpointing.period == 0:
+            # The optimizer step is complete; gradients are not checkpointed.
+            # Release them before staging model and optimizer state for saving.
+            optimizer.zero_grad(set_to_none=True)
             torch.cuda.synchronize()
             save_checkpoint(
                 ckpt_dir / str(iteration),

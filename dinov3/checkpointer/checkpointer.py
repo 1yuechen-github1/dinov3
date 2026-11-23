@@ -25,6 +25,7 @@ Distributed checkpointer docs:
 """
 
 import logging
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -118,9 +119,15 @@ def save_checkpoint(
     if optimizer is not None:
         to_save["optimizer"] = dcpsd.get_optimizer_state_dict(model, optimizer)
     to_save.update(others)
+    # Windows CUDA staging can fail in DCP's overlapping non-blocking GPU ->
+    # CPU copies. A zero copy-ahead budget selects its serial CPU loader.
+    writer_kwargs = {}
+    if sys.platform == "win32":
+        writer_kwargs["per_thread_copy_ahead"] = 0
+        logger.info("Saving checkpoint with serial CPU staging on Windows")
     dcp.save(
         to_save,
-        storage_writer=dcpfs.FileSystemWriter(ckpt_dir_tmp),
+        storage_writer=dcpfs.FileSystemWriter(ckpt_dir_tmp, **writer_kwargs),
         process_group=process_group,
     )
 
