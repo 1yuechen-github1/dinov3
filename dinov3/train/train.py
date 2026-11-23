@@ -407,7 +407,7 @@ def do_train(cfg, model, resume=False):
             load_checkpoint(
                 last_checkpoint_dir,
                 model=model,
-                optimizer=optimizer,
+                optimizer=None,
                 strict_loading=False,
                 process_group=process_subgroup,
             )
@@ -569,7 +569,7 @@ def do_train(cfg, model, resume=False):
                 ckpt_dir / str(iteration),
                 iteration=iteration,
                 model=model,
-                optimizer=optimizer,
+                optimizer=None,
                 overwrite=True,
                 process_group=process_subgroup,
             )
