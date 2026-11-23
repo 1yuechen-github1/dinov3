@@ -19,8 +19,13 @@ backbone 冻结，不易过拟合。
 """
 
 import argparse
+import faulthandler
+import platform
 import random
 from pathlib import Path
+
+# 在导入原生扩展之前启用，Windows 访问冲突时尽量输出 Python 调用栈。
+faulthandler.enable(all_threads=True)
 
 import numpy as np
 import torch
@@ -38,16 +43,23 @@ def set_seed(seed: int):
 
 
 @torch.no_grad()
-def extract_features(model, loader, device):
+def extract_features(model, loader, device, debug_cuda=False):
     """用冻结的 backbone 提取所有图片的 CLS 特征。"""
     model.eval()
     feats, labels = [], []
-    for images, ys in loader:
+    for batch_idx, (images, ys) in enumerate(loader, start=1):
+        print(f"[features {batch_idx}/{len(loader)}] images loaded", flush=True)
         images = images.to(device)
+        if debug_cuda and device == "cuda":
+            torch.cuda.synchronize()
+        print(f"[features {batch_idx}/{len(loader)}] forward start", flush=True)
         out = model(pixel_values=images)
+        if debug_cuda and device == "cuda":
+            torch.cuda.synchronize()
         cls = out.last_hidden_state[:, 0]  # CLS token 即图片特征向量 [B, 1024]
         feats.append(cls.cpu())
         labels.append(ys)
+        print(f"[features {batch_idx}/{len(loader)}] copied to CPU", flush=True)
     return torch.cat(feats, dim=0), torch.cat(labels, dim=0)
 
 
@@ -136,11 +148,21 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")
+    parser.add_argument("--attn-implementation", choices=["eager", "sdpa"], default=None,
+                        help="排查 attention 原生算子崩溃时使用 eager")
+    parser.add_argument("--debug-cuda", action="store_true",
+                        help="在数据传输和模型前向后同步 CUDA，缩小崩溃位置范围")
     args = parser.parse_args()
 
+    print(f"Python: {platform.python_version()}, torch: {torch.__version__}, "
+          f"torch CUDA: {torch.version.cuda}", flush=True)
+    print("[startup] checking CUDA", flush=True)
+    device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
+    print(f"using device: {device}", flush=True)
+    if device == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}", flush=True)
     set_seed(args.seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"using device: {device}")
 
     # 1. 图片预处理（与官方一致：resize 224 + 归一化）
     transform = transforms.Compose([
@@ -151,16 +173,27 @@ def main():
     ])
 
     # 2. 加载数据集
+    print("[data] scanning images", flush=True)
     dataset = datasets.ImageFolder(args.data, transform=transform)
     print(f"共 {len(dataset)} 张图片，{len(dataset.classes)} 个类别：{dataset.classes}")
 
     # 3. 加载冻结的 backbone
-    model = AutoModel.from_pretrained(args.model)
+    print("[model] loading weights on CPU", flush=True)
+    model_kwargs = {}
+    if args.attn_implementation is not None:
+        model_kwargs["attn_implementation"] = args.attn_implementation
+    model = AutoModel.from_pretrained(args.model, **model_kwargs)
+    model.requires_grad_(False)
+    print(f"[model] moving weights to {device}", flush=True)
     model.to(device)
+    if args.debug_cuda and device == "cuda":
+        torch.cuda.synchronize()
+    print("[model] ready", flush=True)
 
     # 4. 提取所有图片特征
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
-    feats, labels = extract_features(model, loader, device)
+    print("[features] loading first batch", flush=True)
+    feats, labels = extract_features(model, loader, device, args.debug_cuda)
     print(f"特征形状: {feats.shape}")
 
     # 5. 分层划分 train/val
