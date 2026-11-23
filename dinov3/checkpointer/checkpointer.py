@@ -86,6 +86,23 @@ def save_checkpoint(
     """Save a plain/DDP/FSDP/FSDP2 model, its optimizer, an integer iteration and other stateful objects."""
     rank = torch.distributed.get_rank(group=process_group)
 
+    # Single-GPU Windows runs do not need distributed.checkpoint.  Use one
+    # ordinary torch file to avoid DCP's CUDA->CPU staging path.
+    if torch.distributed.get_world_size(group=process_group) == 1:
+        ckpt_dir = Path(ckpt_dir)
+        if rank == 0:
+            if ckpt_dir.exists() and overwrite:
+                shutil.rmtree(ckpt_dir) if ckpt_dir.is_dir() else ckpt_dir.unlink()
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            state = {
+                "iteration": iteration,
+                "model": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+                "optimizer": optimizer.state_dict() if optimizer is not None else None,
+            }
+            torch.save(state, ckpt_dir / "checkpoint.pth")
+            logger.info(f"Saved single-GPU torch checkpoint: {ckpt_dir}")
+        return
+
     # Rank 0 checks if the checkpoint directory exists, but all ranks need to know if if exists,
     # so they can raise an error when overwrite is False. If overwrite is True, rank 0 will delete it
     # and other ranks wait for the deletion to finish.
@@ -154,6 +171,14 @@ def load_checkpoint(
     Activation checkpointing and torch-compile can also be different between save and load, no problem.
     """
     ckpt_dir = Path(ckpt_dir)
+    torch_file = ckpt_dir / "checkpoint.pth"
+    if torch_file.is_file():
+        state = torch.load(torch_file, map_location="cpu")
+        model.load_state_dict(state["model"], strict=strict_loading)
+        if optimizer is not None and state.get("optimizer") is not None:
+            optimizer.load_state_dict(state["optimizer"])
+        logger.info(f"Loaded single-GPU torch checkpoint: {torch_file}")
+        return state.get("iteration")
     to_load = {"iteration": None}
     to_load["model"] = dcpsd.get_model_state_dict(model)
     if optimizer is not None:
