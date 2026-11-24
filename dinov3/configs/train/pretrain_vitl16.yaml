@@ -46,8 +46,8 @@ gram:
 
 train:
   batch_size_per_gpu: 1
-  dataset_path: "ImageFolder:root=G:/CY-SPACE/Dinov3/dataset/train"
-  output_dir: "D:/dinov3_runs/vitl16_pretrain"
+  dataset_path: /home/yongkang/CY-SPACE/code/Dinov3/dataset/train
+  output_dir: /home/yongkang/CY-SPACE/code/Dinov3/output/vitl16_pretrain
   saveckp_freq: 20
   seed: 0
   # Windows uses multiprocessing "spawn" and cannot pickle the local lambda
@@ -72,7 +72,7 @@ student:
   drop_path_rate: 0.3
   layerscale: 1.0e-05
   patch_drop: 0.0
-  pretrained_weights: "dataset/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+  pretrained_weights: /home/yongkang/CY-SPACE/code/Dinov3/dataset/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
   ffn_layer: mlp
   ffn_ratio: 4.0
   resume_from_teacher_chkpt: ""
@@ -157,5 +157,5 @@ evaluation:
     low_freq: benchmark_low_frequency.yaml
 
 checkpointing:
-  period: 100
-  max_to_keep: 1
+  period: 3750
+  max_to_keep: 3

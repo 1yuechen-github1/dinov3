@@ -4,6 +4,6 @@ regex
 scikit-learn
 submitit
 termcolor
-torch
+
 torchmetrics
-torchvision
+
