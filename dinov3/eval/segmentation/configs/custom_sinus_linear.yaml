@@ -18,6 +18,12 @@ transforms:
     flip_prob: 0.5
   eval:
     img_size: 224
+    # Custom images are evaluated as one complete image; slide mode can leave
+    # uncovered border pixels when crop/stride are not aligned.
+    tta_ratios: [1.0]
+eval:
+  mode: whole
+  use_tta: false
 train:
   celoss_weight: 1.0
   # CustomSinus masks are integer class-id maps (0/1/2), not one-hot masks.
