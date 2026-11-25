@@ -122,7 +122,7 @@ def train_step(
         # would also remove the batch dimension when bs=1, causing Dice loss
         # to compare pred[B,...] against target[H,W].
         if gt.ndim == 4 and gt.shape[1] == 1:
-            gt = gt[:, 0]
+            gt = gt[:, 0].long()
         elif gt.ndim == 3:
             gt = gt.long()
         else:
