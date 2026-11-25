@@ -13,8 +13,8 @@ model:
 
 train:
   # 建议把数据拆分成 train 和 val
-  dataset: "ImageFolder:root=G:/CY-SPACE/Dinov3/dataset/finetune/train"
-  val_dataset: "ImageFolder:root=G:/CY-SPACE/Dinov3/dataset/finetune/val"
+  dataset: "ImageFolder:root=/home/yongkang/CY-SPACE/code/Dinov3/dataset/finetune/MultiClass/train"
+  val_dataset: "ImageFolder:root=/home/yongkang/CY-SPACE/code/Dinov3/dataset/finetune/MultiClass/val"
 
   val_metric_type: MEAN_ACCURACY
 

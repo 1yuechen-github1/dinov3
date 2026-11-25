@@ -207,9 +207,9 @@ def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_c
             patience += 1
         print(f"epoch {epoch + 1:3d}/{epochs}  train_acc={train_acc:.4f}  val_macro_f1={val_score:.4f}")
 
-        if patience >= 20:  # 20 个 epoch 无提升就早停
-            print("early stopping")
-            break
+        # if patience >= 20:  # 20 个 epoch 无提升就早停
+        #     print("early stopping")
+        #     break
 
         final_state = {k: v.detach().cpu().clone() for k, v in head.state_dict().items()}
     head.load_state_dict(best_state)
