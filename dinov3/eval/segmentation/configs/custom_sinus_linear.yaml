@@ -20,7 +20,10 @@ transforms:
     img_size: 224
 train:
   celoss_weight: 1.0
-  diceloss_weight: 1.0
+  # CustomSinus masks are integer class-id maps (0/1/2), not one-hot masks.
+  # Use cross entropy; the repository Dice implementation expects [B,C,H,W]
+  # one-hot targets and cannot consume this mask format directly.
+  diceloss_weight: 0.0
 optimizer:
   lr: 0.0001
   weight_decay: 0.0001
