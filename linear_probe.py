@@ -32,7 +32,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
-from transformers import AutoModel
 
 
 def set_seed(seed: int):
@@ -53,10 +52,10 @@ def extract_features(model, loader, device, debug_cuda=False):
         if debug_cuda and device == "cuda":
             torch.cuda.synchronize()
         print(f"[features {batch_idx}/{len(loader)}] forward start", flush=True)
-        out = model(pixel_values=images)
+        out = model.forward_features(images) if hasattr(model, "embed_dim") else model(pixel_values=images)
         if debug_cuda and device == "cuda":
             torch.cuda.synchronize()
-        cls = out.last_hidden_state[:, 0]  # CLS token 即图片特征向量 [B, 1024]
+        cls = out["x_norm_clstoken"] if isinstance(out, dict) else out.last_hidden_state[:, 0]
         feats.append(cls.cpu())
         labels.append(ys)
         print(f"[features {batch_idx}/{len(loader)}] copied to CPU", flush=True)
@@ -85,7 +84,9 @@ def stratified_split(dataset, val_ratio: float, seed: int):
     for c in classes:
         idx = (labels == c).nonzero(as_tuple=False).view(-1).tolist()
         random.Random(seed).shuffle(idx)
-        n_val = max(1, int(len(idx) * val_ratio))
+        if len(idx) < 2:
+            raise ValueError(f"类别 {c} 至少需要两张图片以划分训练/验证集")
+        n_val = min(len(idx) - 1, max(1, int(len(idx) * val_ratio)))
         val_idx += idx[:n_val]
         train_idx += idx[n_val:]
     return Subset(dataset, train_idx), Subset(dataset, val_idx)
@@ -93,11 +94,12 @@ def stratified_split(dataset, val_ratio: float, seed: int):
 
 def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_classes):
     """训练一个线性分类头（logistic regression），带早停。"""
-    head = nn.Linear(model.config.hidden_size, num_classes).to(device)
+    feature_dim = model.embed_dim if hasattr(model, "embed_dim") else model.config.hidden_size
+    head = nn.Linear(feature_dim, num_classes).to(device)
     optimizer = torch.optim.AdamW(head.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
-    best_acc, best_state, patience = 0.0, None, 0
+    best_acc, best_state, patience = -1.0, None, 0
     for epoch in range(epochs):
         head.train()
         total, correct = 0, 0
@@ -115,7 +117,7 @@ def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_c
         val_acc = evaluate(head, val_loader, device)
 
         if val_acc > best_acc:
-            best_acc, best_state, patience = val_acc, head.state_dict().copy(), 0
+            best_acc, best_state, patience = val_acc, {k: v.detach().cpu().clone() for k, v in head.state_dict().items()}, 0
         else:
             patience += 1
         print(f"epoch {epoch + 1:3d}/{epochs}  train_acc={train_acc:.4f}  val_acc={val_acc:.4f}")
@@ -142,7 +144,11 @@ def evaluate(head, loader, device):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True, help="标注图片根目录（ImageFolder 结构）")
-    parser.add_argument("--model", required=True, help="DINOv3 模型目录（含 model.safetensors）")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--model", help="HuggingFace 模型目录")
+    source.add_argument("--weights", help="官方 teacher_checkpoint.pth")
+    parser.add_argument("--config", help="预训练 yaml；默认查找权重上级目录的 config.yaml，否则使用仓库 ViT-L 配置")
+    parser.add_argument("--output", default="linear_head.pth", help="分类头输出路径")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -154,6 +160,8 @@ def main():
     parser.add_argument("--debug-cuda", action="store_true",
                         help="在数据传输和模型前向后同步 CUDA，缩小崩溃位置范围")
     args = parser.parse_args()
+    if not 0 < args.val_ratio < 1 or args.epochs < 1 or args.batch_size < 1:
+        parser.error("val-ratio 必须在 0 到 1 之间，epochs 和 batch-size 必须为正数")
 
     print(f"Python: {platform.python_version()}, torch: {torch.__version__}, "
           f"torch CUDA: {torch.version.cuda}", flush=True)
@@ -182,7 +190,33 @@ def main():
     model_kwargs = {}
     if args.attn_implementation is not None:
         model_kwargs["attn_implementation"] = args.attn_implementation
-    model = AutoModel.from_pretrained(args.model, **model_kwargs)
+    config_path = None
+    if args.weights:
+        from omegaconf import OmegaConf
+        from dinov3.models import build_model
+        repo_root = Path(__file__).resolve().parent
+        config_path = Path(args.config) if args.config else next(
+            (p / "config.yaml" for p in Path(args.weights).resolve().parents if (p / "config.yaml").is_file()),
+            repo_root / "dinov3/configs/train/pretrain_vitl16.yaml",
+        )
+        print(f"[model] config: {config_path}", flush=True)
+        cfg = OmegaConf.merge(
+            OmegaConf.load(repo_root / "dinov3/configs/ssl_default_config.yaml"),
+            OmegaConf.load(config_path),
+        )
+        cfg.student.fp8_enabled = False
+        model, _ = build_model(cfg.student, only_teacher=True, img_size=224, device="meta")
+        model.to_empty(device="cpu")
+        checkpoint = torch.load(args.weights, map_location="cpu", weights_only=True)
+        state = checkpoint.get("teacher", checkpoint)
+        state = {k.removeprefix("module."): v for k, v in state.items()}
+        if any(k.startswith("backbone.") for k in state):
+            state = {k.removeprefix("backbone."): v for k, v in state.items() if k.startswith("backbone.")}
+        model.load_state_dict(state, strict=True)
+        del checkpoint, state
+    else:
+        from transformers import AutoModel
+        model = AutoModel.from_pretrained(args.model, **model_kwargs)
     model.requires_grad_(False)
     print(f"[model] moving weights to {device}", flush=True)
     model.to(device)
@@ -208,8 +242,13 @@ def main():
     )
 
     # 7. 保存线性头
-    out_path = Path(args.model) / "linear_head.pth"
-    torch.save({"head": head.state_dict(), "classes": dataset.classes}, out_path)
+    out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"head": head.state_dict(), "classes": dataset.classes,
+                "weights": args.weights, "model": args.model,
+                "config": str(config_path) if config_path else None,
+                "feature_dim": feats.shape[1], "best_val_acc": best_acc,
+                "image_size": 224}, out_path)
     print(f"\n完成！验证集最佳准确率: {best_acc:.4f}")
     print(f"线性头已保存到: {out_path}")
 
