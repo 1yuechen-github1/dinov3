@@ -103,7 +103,7 @@ def collect_predictions(head, loader, device):
     return torch.cat(ys_all).numpy(), torch.cat(pred_all).numpy(), torch.cat(prob_all).numpy()
 
 
-def metric_report(y_true, y_pred, y_prob, class_names, output_dir, prefix):
+def metric_report(y_true, y_pred, y_prob, class_names, output_dir, prefix, make_plots=True, write_files=True):
     output_dir.mkdir(parents=True, exist_ok=True)
     cm = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names))))
     report = classification_report(y_true, y_pred, target_names=class_names, output_dict=True, zero_division=0)
@@ -115,8 +115,11 @@ def metric_report(y_true, y_pred, y_prob, class_names, output_dir, prefix):
         "confusion_matrix": cm.tolist(),
     }
     import json
-    (output_dir / f"{prefix}_metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    if write_files:
+        (output_dir / f"{prefix}_metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
+        if not make_plots:
+            raise ImportError
         import matplotlib.pyplot as plt
         import seaborn as sns
         plt.figure(figsize=(max(6, len(class_names)), max(5, len(class_names) * .7)))
@@ -142,8 +145,13 @@ def save_error_cases(y_true, y_pred, dataset, val_indices, class_names, output_d
     rows = []
     for i, (y, p) in enumerate(zip(y_true, y_pred)):
         path, _ = dataset.samples[val_indices[i]]
-        if y == p: kind = "TP"  # 对多分类而言是该真实类别的 TP
-        else: kind = "FN"  # 对真实类别，同时也是预测类别的 FP
+        if y == p:
+            kind = "TP"
+        else:
+            # In multiclass classification a wrong sample is FN for its true
+            # class and FP for the predicted class; TN is the remaining
+            # one-vs-rest population and cannot be assigned to one image.
+            kind = "FN+FP"
         rows.append(f"{kind}\t{class_names[y]}\t{class_names[p]}\t{path}")
     (output_dir / f"{prefix}_samples.tsv").write_text("type\ttrue\tpredicted\tpath\n" + "\n".join(rows), encoding="utf-8")
 
@@ -155,10 +163,11 @@ def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_c
     optimizer = torch.optim.AdamW(head.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
-    best_score, best_state, patience = -1.0, None, 0
+    best_score, best_state, final_state, patience = -1.0, None, None, 0
+    history = {"epoch": [], "train_loss": [], "train_accuracy": [], "val_macro_f1": []}
     for epoch in range(epochs):
         head.train()
-        total, correct = 0, 0
+        total, correct, loss_sum = 0, 0, 0.0
         for feats, ys in train_loader:
             feats, ys = feats.to(device), ys.to(device)
             logits = head(feats)
@@ -166,13 +175,18 @@ def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_c
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            loss_sum += loss.item() * ys.numel()
             total += ys.numel()
             correct += (logits.argmax(1) == ys).sum().item()
 
         train_acc = correct / total
         yv, pv, probv = collect_predictions(head, val_loader, device)
-        val_metrics = metric_report(yv, pv, probv, class_names, output_dir, "val_current")
+        val_metrics = metric_report(yv, pv, probv, class_names, output_dir, "val_current", make_plots=False, write_files=False)
         val_score = val_metrics["macro_f1"]
+        history["epoch"].append(epoch + 1)
+        history["train_loss"].append(loss_sum / max(total, 1))
+        history["train_accuracy"].append(train_acc)
+        history["val_macro_f1"].append(val_score)
 
         if val_score > best_score:
             best_score, best_state, patience = val_score, {k: v.detach().cpu().clone() for k, v in head.state_dict().items()}, 0
@@ -185,8 +199,9 @@ def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_c
             print("early stopping")
             break
 
+        final_state = {k: v.detach().cpu().clone() for k, v in head.state_dict().items()}
     head.load_state_dict(best_state)
-    return head, best_score
+    return head, best_score, best_state, final_state, history
 
 
 @torch.no_grad()
@@ -297,22 +312,40 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=64, shuffle=False)
 
     # 6. 训练线性头
-    head, best_acc = train_linear_head(
+    head, best_acc, best_state, final_state, history = train_linear_head(
         model, train_loader, val_loader, device, args.epochs, args.lr,
         len(dataset.classes), dataset.classes, Path(args.metrics_dir)
     )
+    metrics_dir = Path(args.metrics_dir)
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    import json
+    (metrics_dir / "training_history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
+    try:
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(8, 5)); plt.plot(history["epoch"], history["train_loss"], label="train loss")
+        plt.xlabel("Epoch"); plt.ylabel("Loss"); plt.grid(True); plt.legend(); plt.tight_layout()
+        plt.savefig(metrics_dir / "loss_curve.png", dpi=180); plt.close()
+    except ImportError:
+        print("未安装 matplotlib，跳过 loss 曲线", flush=True)
+    # Evaluate each saved model once, after training is complete.
+    head.load_state_dict(best_state)
+    yb, pb, probb = collect_predictions(head, val_loader, device)
+    best_metrics = metric_report(yb, pb, probb, dataset.classes, metrics_dir, "best")
+    save_error_cases(yb, pb, dataset, val_ds.indices, dataset.classes, Path(args.metrics_dir), "best")
 
     # 7. 保存线性头
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     # Final model and final validation report (best_model.pth is selected by Macro-F1).
+    head.load_state_dict(final_state)
     yv, pv, probv = collect_predictions(head, val_loader, device)
-    final_metrics = metric_report(yv, pv, probv, dataset.classes, Path(args.metrics_dir), "final")
+    final_metrics = metric_report(yv, pv, probv, dataset.classes, metrics_dir, "final")
+    save_error_cases(yv, pv, dataset, val_ds.indices, dataset.classes, metrics_dir, "final")
     torch.save({"head": head.state_dict(), "classes": dataset.classes,
                 "weights": args.weights, "model": args.model,
                 "config": str(config_path) if config_path else None,
                 "feature_dim": feats.shape[1], "best_val_acc": best_acc,
-                "image_size": 224, "metrics": final_metrics}, out_path)
+                "image_size": 224, "metrics": best_metrics}, out_path)
     torch.save({"head": head.state_dict(), "classes": dataset.classes,
                 "best_macro_f1": best_acc, "metrics": final_metrics}, out_path.parent / "final_model.pth")
     print(f"\n完成！验证集最佳准确率: {best_acc:.4f}")
