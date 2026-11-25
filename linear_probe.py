@@ -30,6 +30,8 @@ faulthandler.enable(all_threads=True)
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.metrics import (accuracy_score, classification_report, confusion_matrix,
+                             f1_score, precision_recall_curve, roc_curve, auc)
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
 
@@ -92,14 +94,68 @@ def stratified_split(dataset, val_ratio: float, seed: int):
     return Subset(dataset, train_idx), Subset(dataset, val_idx)
 
 
-def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_classes):
+@torch.no_grad()
+def collect_predictions(head, loader, device):
+    head.eval(); ys_all, pred_all, prob_all = [], [], []
+    for feats, ys in loader:
+        logits = head(feats.to(device)); prob = logits.softmax(1).cpu()
+        ys_all.append(ys); pred_all.append(prob.argmax(1)); prob_all.append(prob)
+    return torch.cat(ys_all).numpy(), torch.cat(pred_all).numpy(), torch.cat(prob_all).numpy()
+
+
+def metric_report(y_true, y_pred, y_prob, class_names, output_dir, prefix):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names))))
+    report = classification_report(y_true, y_pred, target_names=class_names, output_dict=True, zero_division=0)
+    metrics = {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "macro_f1": f1_score(y_true, y_pred, average="macro", zero_division=0),
+        "weighted_f1": f1_score(y_true, y_pred, average="weighted", zero_division=0),
+        "per_class": report,
+        "confusion_matrix": cm.tolist(),
+    }
+    import json
+    (output_dir / f"{prefix}_metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        plt.figure(figsize=(max(6, len(class_names)), max(5, len(class_names) * .7)))
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=class_names, yticklabels=class_names)
+        plt.xlabel("Predicted"); plt.ylabel("True"); plt.tight_layout(); plt.savefig(output_dir / f"{prefix}_confusion_matrix.png", dpi=180); plt.close()
+        plt.figure(figsize=(7, 6))
+        for c, name in enumerate(class_names):
+            if len(np.unique(y_true == c)) == 2:
+                fpr, tpr, _ = roc_curve((y_true == c).astype(int), y_prob[:, c]); plt.plot(fpr, tpr, label=f"{name} (AUC={auc(fpr,tpr):.3f})")
+        plt.plot([0, 1], [0, 1], "k--"); plt.xlabel("False Positive Rate"); plt.ylabel("True Positive Rate"); plt.legend(); plt.tight_layout(); plt.savefig(output_dir / f"{prefix}_roc.png", dpi=180); plt.close()
+        plt.figure(figsize=(7, 6))
+        for c, name in enumerate(class_names):
+            precision, recall, _ = precision_recall_curve((y_true == c).astype(int), y_prob[:, c]); plt.plot(recall, precision, label=name)
+        plt.xlabel("Recall"); plt.ylabel("Precision"); plt.legend(); plt.tight_layout(); plt.savefig(output_dir / f"{prefix}_pr.png", dpi=180); plt.close()
+    except ImportError:
+        print("未安装 matplotlib/seaborn，跳过图像生成", flush=True)
+    print(f"[{prefix}] Accuracy={metrics['accuracy']:.4f} Macro-F1={metrics['macro_f1']:.4f} Weighted-F1={metrics['weighted_f1']:.4f}", flush=True)
+    print(classification_report(y_true, y_pred, target_names=class_names, zero_division=0), flush=True)
+    return metrics
+
+
+def save_error_cases(y_true, y_pred, dataset, val_indices, class_names, output_dir, prefix):
+    rows = []
+    for i, (y, p) in enumerate(zip(y_true, y_pred)):
+        path, _ = dataset.samples[val_indices[i]]
+        if y == p: kind = "TP"  # 对多分类而言是该真实类别的 TP
+        else: kind = "FN"  # 对真实类别，同时也是预测类别的 FP
+        rows.append(f"{kind}\t{class_names[y]}\t{class_names[p]}\t{path}")
+    (output_dir / f"{prefix}_samples.tsv").write_text("type\ttrue\tpredicted\tpath\n" + "\n".join(rows), encoding="utf-8")
+
+
+def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_classes, class_names, output_dir):
     """训练一个线性分类头（logistic regression），带早停。"""
     feature_dim = model.embed_dim if hasattr(model, "embed_dim") else model.config.hidden_size
     head = nn.Linear(feature_dim, num_classes).to(device)
     optimizer = torch.optim.AdamW(head.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
-    best_acc, best_state, patience = -1.0, None, 0
+    best_score, best_state, patience = -1.0, None, 0
     for epoch in range(epochs):
         head.train()
         total, correct = 0, 0
@@ -114,20 +170,23 @@ def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_c
             correct += (logits.argmax(1) == ys).sum().item()
 
         train_acc = correct / total
-        val_acc = evaluate(head, val_loader, device)
+        yv, pv, probv = collect_predictions(head, val_loader, device)
+        val_metrics = metric_report(yv, pv, probv, class_names, output_dir, "val_current")
+        val_score = val_metrics["macro_f1"]
 
-        if val_acc > best_acc:
-            best_acc, best_state, patience = val_acc, {k: v.detach().cpu().clone() for k, v in head.state_dict().items()}, 0
+        if val_score > best_score:
+            best_score, best_state, patience = val_score, {k: v.detach().cpu().clone() for k, v in head.state_dict().items()}, 0
+            torch.save({"head": best_state, "classes": class_names, "best_macro_f1": best_score}, output_dir / "best_model.pth")
         else:
             patience += 1
-        print(f"epoch {epoch + 1:3d}/{epochs}  train_acc={train_acc:.4f}  val_acc={val_acc:.4f}")
+        print(f"epoch {epoch + 1:3d}/{epochs}  train_acc={train_acc:.4f}  val_macro_f1={val_score:.4f}")
 
         if patience >= 20:  # 20 个 epoch 无提升就早停
             print("early stopping")
             break
 
     head.load_state_dict(best_state)
-    return head, best_acc
+    return head, best_score
 
 
 @torch.no_grad()
@@ -149,6 +208,7 @@ def main():
     source.add_argument("--weights", help="官方 teacher_checkpoint.pth")
     parser.add_argument("--config", help="预训练 yaml；默认查找权重上级目录的 config.yaml，否则使用仓库 ViT-L 配置")
     parser.add_argument("--output", default="linear_head.pth", help="分类头输出路径")
+    parser.add_argument("--metrics-dir", default="classification_metrics", help="评估报告和图像输出目录")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -238,17 +298,23 @@ def main():
 
     # 6. 训练线性头
     head, best_acc = train_linear_head(
-        model, train_loader, val_loader, device, args.epochs, args.lr, len(dataset.classes)
+        model, train_loader, val_loader, device, args.epochs, args.lr,
+        len(dataset.classes), dataset.classes, Path(args.metrics_dir)
     )
 
     # 7. 保存线性头
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Final model and final validation report (best_model.pth is selected by Macro-F1).
+    yv, pv, probv = collect_predictions(head, val_loader, device)
+    final_metrics = metric_report(yv, pv, probv, dataset.classes, Path(args.metrics_dir), "final")
     torch.save({"head": head.state_dict(), "classes": dataset.classes,
                 "weights": args.weights, "model": args.model,
                 "config": str(config_path) if config_path else None,
                 "feature_dim": feats.shape[1], "best_val_acc": best_acc,
-                "image_size": 224}, out_path)
+                "image_size": 224, "metrics": final_metrics}, out_path)
+    torch.save({"head": head.state_dict(), "classes": dataset.classes,
+                "best_macro_f1": best_acc, "metrics": final_metrics}, out_path.parent / "final_model.pth")
     print(f"\n完成！验证集最佳准确率: {best_acc:.4f}")
     print(f"线性头已保存到: {out_path}")
 
