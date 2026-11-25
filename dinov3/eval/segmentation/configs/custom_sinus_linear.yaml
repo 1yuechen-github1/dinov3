@@ -1,0 +1,32 @@
+model:
+  config_file: /home/yongkang/CY-SPACE/code/Dinov3/dinov3/configs/train/pretrain_vitl16.yaml
+  pretrained_weights: /home/yongkang/CY-SPACE/code/Dinov3/output/vitl16/vitl16_pretrain/eval/training_99999/teacher_checkpoint.pth
+datasets:
+  root: /home/yongkang/CY-SPACE/code/Dinov3/dataset/sinus
+  train: "CustomSinus:split=train"
+  val: "CustomSinus:split=val"
+decoder_head:
+  type: linear
+  backbone_out_layers: LAST
+  num_classes: 3
+  use_batchnorm: true
+  use_cls_token: false
+  use_backbone_norm: true
+transforms:
+  train:
+    crop_size: [224, 224]
+    flip_prob: 0.5
+  eval:
+    img_size: 224
+train:
+  celoss_weight: 1.0
+  diceloss_weight: 1.0
+optimizer:
+  lr: 0.0001
+  weight_decay: 0.0001
+scheduler:
+  total_iter: 10000
+bs: 1
+n_gpus: 1
+num_workers: 0
+output_dir: /home/yongkang/CY-SPACE/code/Dinov3/output/sinus_seg

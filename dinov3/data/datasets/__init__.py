@@ -9,3 +9,4 @@ from .image_net import ImageNet
 from .image_folder import ImageFolder
 from .image_net_22k import ImageNet22k
 from .nyu import NYU
+from .custom_sinus import CustomSinus

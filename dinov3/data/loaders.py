@@ -10,7 +10,7 @@ from typing import Any, Callable, List, Optional, TypeVar
 import torch
 from torch.utils.data import Sampler
 
-from .datasets import ADE20K, CocoCaptions, ImageFolder, ImageNet, ImageNet22k, NYU
+from .datasets import ADE20K, CocoCaptions, CustomSinus, ImageFolder, ImageNet, ImageNet22k, NYU
 from .samplers import EpochSampler, InfiniteSampler, ShardedInfiniteSampler
 
 logger = logging.getLogger("dinov3")
@@ -85,6 +85,8 @@ def _parse_dataset_str(dataset_str: str):
             kwargs["split"] = NYU.Split[kwargs["split"]]
     elif name == "ImageFolder":
         class_ = ImageFolder
+    elif name == "CustomSinus":
+        class_ = CustomSinus
     else:
         raise ValueError(f'Unsupported dataset "{name}"')
 
