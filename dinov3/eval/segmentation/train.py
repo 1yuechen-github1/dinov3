@@ -118,7 +118,15 @@ def train_step(
     # b) forward pass
     with torch.autocast("cuda", dtype=model_dtype, enabled=True if model_dtype is not None else False):
         pred = segmentation_model(batch_img)  # B x num_classes x h x w
-        gt = torch.squeeze(gt).long()  # Adapt gt dimension to enable loss calculation
+        # Remove only a singleton mask-channel dimension. torch.squeeze(gt)
+        # would also remove the batch dimension when bs=1, causing Dice loss
+        # to compare pred[B,...] against target[H,W].
+        if gt.ndim == 4 and gt.shape[1] == 1:
+            gt = gt[:, 0]
+        elif gt.ndim == 3:
+            gt = gt.long()
+        else:
+            gt = gt.squeeze(-1).long()
 
     # c) compute loss
     if gt.shape[-2:] != pred.shape[-2:]:
