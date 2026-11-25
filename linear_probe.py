@@ -103,6 +103,16 @@ def collect_predictions(head, loader, device):
     return torch.cat(ys_all).numpy(), torch.cat(pred_all).numpy(), torch.cat(prob_all).numpy()
 
 
+@torch.no_grad()
+def collect_loss(head, loader, device, criterion):
+    head.eval(); total_loss = 0.0; total = 0
+    for feats, ys in loader:
+        ys = ys.to(device)
+        loss = criterion(head(feats.to(device)), ys)
+        total_loss += loss.item() * ys.numel(); total += ys.numel()
+    return total_loss / max(total, 1)
+
+
 def metric_report(y_true, y_pred, y_prob, class_names, output_dir, prefix, make_plots=True, write_files=True):
     output_dir.mkdir(parents=True, exist_ok=True)
     cm = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names))))
@@ -164,7 +174,7 @@ def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_c
     criterion = nn.CrossEntropyLoss()
 
     best_score, best_state, final_state, patience = -1.0, None, None, 0
-    history = {"epoch": [], "train_loss": [], "train_accuracy": [], "val_macro_f1": []}
+    history = {"epoch": [], "train_loss": [], "val_loss": [], "train_accuracy": [], "val_macro_f1": []}
     for epoch in range(epochs):
         head.train()
         total, correct, loss_sum = 0, 0, 0.0
@@ -183,8 +193,10 @@ def train_linear_head(model, train_loader, val_loader, device, epochs, lr, num_c
         yv, pv, probv = collect_predictions(head, val_loader, device)
         val_metrics = metric_report(yv, pv, probv, class_names, output_dir, "val_current", make_plots=False, write_files=False)
         val_score = val_metrics["macro_f1"]
+        val_loss = collect_loss(head, val_loader, device, criterion)
         history["epoch"].append(epoch + 1)
         history["train_loss"].append(loss_sum / max(total, 1))
+        history["val_loss"].append(val_loss)
         history["train_accuracy"].append(train_acc)
         history["val_macro_f1"].append(val_score)
 
@@ -334,7 +346,7 @@ def main():
     (metrics_dir / "training_history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
     try:
         import matplotlib.pyplot as plt
-        plt.figure(figsize=(8, 5)); plt.plot(history["epoch"], history["train_loss"], label="train loss")
+        plt.figure(figsize=(8, 5)); plt.plot(history["epoch"], history["train_loss"], label="train loss"); plt.plot(history["epoch"], history["val_loss"], label="val loss")
         plt.xlabel("Epoch"); plt.ylabel("Loss"); plt.grid(True); plt.legend(); plt.tight_layout()
         plt.savefig(metrics_dir / "loss_curve.png", dpi=180); plt.close()
     except ImportError:
