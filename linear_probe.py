@@ -287,7 +287,19 @@ def main():
         state = {k.removeprefix("module."): v for k, v in state.items()}
         if any(k.startswith("backbone.") for k in state):
             state = {k.removeprefix("backbone."): v for k, v in state.items() if k.startswith("backbone.")}
-        model.load_state_dict(state, strict=True)
+        # Training checkpoints may contain auxiliary storage-token and
+        # qkv bias-mask buffers that are not needed for frozen CLS features.
+        # Load the backbone compatibly and fail only on real tensor shape errors.
+        msg = model.load_state_dict(state, strict=False)
+        unexpected = [k for k in msg.unexpected_keys
+                      if k != "storage_tokens" and not k.endswith(".bias_mask")]
+        if unexpected or msg.missing_keys:
+            raise RuntimeError(
+                "预训练权重与当前 ViT 配置结构不匹配。\n"
+                f"missing keys: {msg.missing_keys[:20]}\n"
+                f"unexpected keys: {unexpected[:20]}"
+            )
+        print(f"[model] ignored auxiliary checkpoint keys: {len(msg.unexpected_keys)}", flush=True)
         del checkpoint, state
     else:
         from transformers import AutoModel
