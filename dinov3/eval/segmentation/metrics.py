@@ -82,6 +82,14 @@ def calculate_intersect_and_union(pred_label, label, num_classes, ignore_index=2
         ignore_index (int): Index that will be ignored in evaluation.
         reduce_zero_label (bool): Indicates whether or not label 0 is to be ignored.
     """
+    # Metrics consume one 2D class-id map. Callers may retain singleton
+    # batch/channel axes; remove those without collapsing spatial dimensions.
+    while pred_label.ndim > 2 and pred_label.shape[0] == 1:
+        pred_label = pred_label[0]
+    while label.ndim > 2 and label.shape[0] == 1:
+        label = label[0]
+    if pred_label.ndim != 2 or label.ndim != 2 or pred_label.shape != label.shape:
+        raise ValueError(f"Prediction/target must be matching [H,W] maps: {tuple(pred_label.shape)} vs {tuple(label.shape)}")
     pred_label = pred_label.float()  # Enables float tensor operations
     if reduce_zero_label:
         label = preprocess_nonzero_labels(label, ignore_index=ignore_index)

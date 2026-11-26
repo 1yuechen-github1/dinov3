@@ -96,7 +96,7 @@ def evaluate_segmentation_model(
             (folder / f"{debug_count:02d}_counts.json").write_text(json.dumps(stats, indent=2))
             debug_count += 1
         intersect_and_union = calculate_intersect_and_union(
-            aggregated_preds[0],
+            aggregated_preds[0, 0],
             gt,
             num_classes=num_classes,
             reduce_zero_label=reduce_zero_label,
