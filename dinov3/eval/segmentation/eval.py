@@ -53,7 +53,7 @@ def evaluate_segmentation_model(
             raise ValueError(f"Expected 2D class-id mask, got {tuple(gt.shape)}")
         aggregated_preds = torch.zeros(1, num_classes, gt.shape[-2], gt.shape[-1])
         for img_idx, img in enumerate(batch_img):
-            aggregated_preds += make_inference(
+            prediction = make_inference(
                 img,
                 segmentation_model.module,
                 inference_mode=inference_mode,
@@ -65,6 +65,8 @@ def evaluate_segmentation_model(
                 apply_horizontal_flip=(img_idx and img_idx >= len(batch_img) / 2),
                 output_activation=partial(torch.nn.functional.softmax, dim=1),
             )
+            aggregated_preds += prediction.detach().to(device="cpu", dtype=aggregated_preds.dtype)
+            del prediction
         aggregated_preds = (aggregated_preds / len(batch_img)).argmax(dim=1, keepdim=True).to(device)
         intersect_and_union = calculate_intersect_and_union(
             aggregated_preds[0],
