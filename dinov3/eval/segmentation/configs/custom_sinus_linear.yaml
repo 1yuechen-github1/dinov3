@@ -2,7 +2,7 @@ model:
   config_file: /home/yongkang/CY-SPACE/code/Dinov3/dinov3/configs/train/pretrain_vitl16.yaml
   pretrained_weights: /home/yongkang/CY-SPACE/code/Dinov3/output/vitl16/vitl16_pretrain/eval/training_99999/teacher_checkpoint.pth
 datasets:
-  root: /home/yongkang/CY-SPACE/code/Dinov3/dataset/sinus
+  root: /home/yongkang/CY-SPACE/code/Dinov3/dataset/finetune/Segmentation
   train: "CustomSinus:split=train"
   val: "CustomSinus:split=val"
 decoder_head:
@@ -41,4 +41,4 @@ scheduler:
 bs: 1
 n_gpus: 1
 num_workers: 0
-output_dir: /home/yongkang/CY-SPACE/code/Dinov3/output/sinus_seg
+output_dir: /home/yongkang/CY-SPACE/code/Dinov3/output/vitl16/Seg
