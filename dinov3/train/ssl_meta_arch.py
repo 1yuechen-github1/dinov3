@@ -440,6 +440,29 @@ class SSLMetaArch(nn.Module):
             mask_indices_list=mask_indices_list,
         )
 
+        if iteration % 100 == 0:
+            # Observe the failure mode without changing the training objective.
+            with torch.no_grad():
+                probs = teacher_global["cls_centered"].detach().float()
+                entropy = -(probs * probs.clamp_min(1e-30).log()).sum(-1).mean()
+                max_prob = probs.max(-1).values.mean()
+                features = torch.nn.functional.normalize(
+                    teacher_global["cls_pre_head"][0].detach().float(), dim=-1)
+                feature_std = features.std(dim=0, unbiased=False).mean()
+                similarities = features @ features.T
+                off_diagonal = ~torch.eye(B, dtype=torch.bool, device=features.device)
+                cosine = similarities[off_diagonal].mean() if B > 1 else features.new_tensor(float("nan"))
+                student_probs = torch.softmax(student_global["cls_after_head"].detach().float()
+                                               / self.dino_loss.student_temp, dim=-1)
+                student_entropy = -(student_probs * student_probs.clamp_min(1e-30).log()).sum(-1).mean()
+                logger.info(
+                    "DINO diagnostic step=%d teacher_entropy=%.6f student_entropy=%.6f "
+                    "uniform_entropy=%.6f teacher_max_prob=%.8f feature_std=%.6f image_cosine=%.6f",
+                    iteration, entropy.item(), student_entropy.item(),
+                    __import__("math").log(probs.shape[-1]), max_prob.item(),
+                    feature_std.item(), cosine.item(),
+                )
+
         # Gram output
         if self.gram_use_loss:
             gram_global = self.get_gram_teacher_output(
