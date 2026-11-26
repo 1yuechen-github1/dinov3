@@ -70,12 +70,7 @@ def make_inference(
         )
     else:
         pred = segmentation_model.predict(
-            F.interpolate(
-                x,
-                size=(512, 512),
-                mode="bilinear",
-                align_corners=False,
-            ),
+            x,
             rescale_to=rescale_to,
         )
         if decoder_head_type == "m2f":

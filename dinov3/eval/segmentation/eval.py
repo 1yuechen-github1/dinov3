@@ -26,6 +26,7 @@ RESULTS_FILENAME = "results-semantic-segmentation.csv"
 MAIN_METRICS = ["mIoU"]
 
 
+@torch.no_grad()
 def evaluate_segmentation_model(
     segmentation_model: torch.nn.Module,
     test_dataloader,
@@ -35,6 +36,8 @@ def evaluate_segmentation_model(
     decoder_head_type,
     num_classes,
     autocast_dtype,
+    inference_mode="whole",
+    reduce_zero_label=False,
 ):
     segmentation_model = segmentation_model.to(device)
     segmentation_model.eval()
@@ -44,12 +47,16 @@ def evaluate_segmentation_model(
     for batch_img, (_, gt) in metric_logger.log_every(test_dataloader, 10, header="Validation: "):
         batch_img = [img.to(device).to(dtype=autocast_dtype) for img in batch_img]
         gt = gt.to(device)[0]
+        if gt.ndim == 3 and gt.shape[0] == 1:
+            gt = gt[0]
+        if gt.ndim != 2:
+            raise ValueError(f"Expected 2D class-id mask, got {tuple(gt.shape)}")
         aggregated_preds = torch.zeros(1, num_classes, gt.shape[-2], gt.shape[-1])
         for img_idx, img in enumerate(batch_img):
             aggregated_preds += make_inference(
                 img,
                 segmentation_model.module,
-                inference_mode="slide",
+                inference_mode=inference_mode,
                 decoder_head_type=decoder_head_type,
                 rescale_to=gt.shape[-2:],
                 n_output_channels=num_classes,
@@ -63,7 +70,7 @@ def evaluate_segmentation_model(
             aggregated_preds[0],
             gt,
             num_classes=num_classes,
-            reduce_zero_label=True,
+            reduce_zero_label=reduce_zero_label,
         )
         all_metric_values.append(intersect_and_union)
         del img, gt, aggregated_preds, intersect_and_union
@@ -105,8 +112,8 @@ def test_segmentation(backbone, config):
     eval_res = config.eval.crop_size
     eval_stride = config.eval.stride
     transforms = make_segmentation_eval_transforms(
-        img_size=eval_res,
-        inference_mode="slide",
+        img_size=config.transforms.eval.img_size,
+        inference_mode=config.eval.mode,
         use_tta=config.eval.use_tta,
         tta_ratios=config.transforms.eval.tta_ratios,
         mean=config.transforms.mean,
@@ -127,11 +134,11 @@ def test_segmentation(backbone, config):
     test_dataloader = make_data_loader(
         dataset=test_dataset,
         batch_size=1,
-        num_workers=6,
+        num_workers=config.num_workers,
         sampler_type=test_sampler_type,
         drop_last=False,
         shuffle=False,
-        persistent_workers=True,
+        persistent_workers=config.num_workers > 0,
     )
 
     # 3- make inference
@@ -144,4 +151,6 @@ def test_segmentation(backbone, config):
         decoder_head_type=config.decoder_head.type,
         num_classes=config.decoder_head.num_classes,
         autocast_dtype=config.model_dtype.autocast_dtype,
+        inference_mode=config.eval.mode,
+        reduce_zero_label=config.eval.reduce_zero_label,
     )

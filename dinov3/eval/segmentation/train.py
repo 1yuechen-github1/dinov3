@@ -44,6 +44,8 @@ class InfiniteDataloader:
             data = next(self.data_iterator)
         except StopIteration:
             self.sampler.epoch += 1
+            if hasattr(self.sampler, "set_epoch"):
+                self.sampler.set_epoch(self.sampler.epoch)
             self.data_iterator = iter(self.dataloader)
             data = next(self.data_iterator)
         return data
@@ -76,6 +78,8 @@ def validate(
     global_step,
     metric_to_save,
     current_best_metric_to_save_value,
+    inference_mode="whole",
+    reduce_zero_label=False,
 ):
     new_metric_values_dict = evaluate_segmentation_model(
         segmentation_model,
@@ -86,6 +90,8 @@ def validate(
         decoder_head_type,
         num_classes,
         autocast_dtype,
+        inference_mode=inference_mode,
+        reduce_zero_label=reduce_zero_label,
     )
     logger.info(f"Step {global_step}: {new_metric_values_dict}")
     # `segmentation_model` is a module list of [backbone, decoder]
@@ -113,6 +119,11 @@ def train_step(
     batch_img, (_, gt) = batch
     batch_img = batch_img.to(device)  # B x C x h x w
     gt = gt.to(device)  # B x (num_classes if multilabel) x h x w
+    if gt.ndim == 4 and gt.shape[1] == 1:
+        gt = gt[:, 0]
+    if gt.ndim != 3:
+        raise ValueError(f"Expected class-id masks [B,H,W], got {tuple(gt.shape)}")
+    gt = gt.long()
     optimizer.zero_grad(set_to_none=True)
 
     # b) forward pass
@@ -121,12 +132,9 @@ def train_step(
         # Remove only a singleton mask-channel dimension. torch.squeeze(gt)
         # would also remove the batch dimension when bs=1, causing Dice loss
         # to compare pred[B,...] against target[H,W].
-        if gt.ndim == 4 and gt.shape[1] == 1:
-            gt = gt[:, 0].long()
-        elif gt.ndim == 3:
-            gt = gt.long()
-        else:
-            gt = gt.squeeze(-1).long()
+        invalid = (gt != 255) & ((gt < 0) | (gt >= pred.shape[1]))
+        if invalid.any():
+            raise ValueError(f"Mask labels out of range for {pred.shape[1]} classes: {gt[invalid].unique().tolist()}")
 
     # c) compute loss
     if gt.shape[-2:] != pred.shape[-2:]:
@@ -172,6 +180,8 @@ def train_segmentation(
         segmentation_model.to(local_device), device_ids=[local_device]
     )  # should be local rank
     model_parameters = filter(lambda p: p.requires_grad, segmentation_model.parameters())
+    segmentation_model.module.segmentation_model[0].eval()
+    segmentation_model.module.segmentation_model[1].train()
     logger.info(f"Number of trainable parameters: {sum(p.numel() for p in model_parameters)}")
 
     # 2- create data transforms + dataloaders
@@ -187,6 +197,8 @@ def train_segmentation(
     val_transforms = make_segmentation_eval_transforms(
         img_size=config.transforms.eval.img_size,
         inference_mode=config.eval.mode,
+        use_tta=config.eval.use_tta,
+        tta_ratios=config.transforms.eval.tta_ratios,
         mean=config.transforms.mean,
         std=config.transforms.std,
     )
@@ -231,7 +243,7 @@ def train_segmentation(
         sampler_type=val_sampler_type,
         drop_last=False,
         shuffle=False,
-        persistent_workers=True,
+        persistent_workers=config.num_workers > 0,
     )
 
     # 3- define and create scaler, optimizer, scheduler, loss
@@ -329,6 +341,8 @@ def train_segmentation(
                 global_step,
                 config.metric_to_save,
                 global_best_metric_values[config.metric_to_save],
+                inference_mode=config.eval.mode,
+                reduce_zero_label=config.eval.reduce_zero_label,
             )
             if is_better:
                 logger.info(f"New best metrics at Step {global_step}: {best_metric_values_dict}")
@@ -349,6 +363,8 @@ def train_segmentation(
                 global_step,
                 config.metric_to_save,
                 global_best_metric_values[config.metric_to_save],
+                inference_mode=config.eval.mode,
+                reduce_zero_label=config.eval.reduce_zero_label,
             )
             if is_better:
                 logger.info(f"New best metrics at Step {global_step}: {best_metric_values_dict}")
@@ -360,12 +376,6 @@ def train_segmentation(
     save_training_checkpoint("model_latest.pth")
     # segmentation_model is a module list of [backbone, decoder]
     # Only save the decoder head
-    torch.save(
-        {
-            "model": {k: v for k, v in segmentation_model.module.state_dict().items() if "segmentation_model.1" in k},
-            "optimizer": optimizer.state_dict(),
-        },
-        os.path.join(config.output_dir, "model_final.pth"),
-    )
+    save_training_checkpoint("model_final.pth")
     logger.info(f"Final best metrics: {global_best_metric_values}")
     return global_best_metric_values
