@@ -5,6 +5,10 @@
 
 from functools import partial
 import logging
+from pathlib import Path
+import json
+import numpy as np
+from PIL import Image
 
 import torch
 
@@ -38,10 +42,12 @@ def evaluate_segmentation_model(
     autocast_dtype,
     inference_mode="whole",
     reduce_zero_label=False,
+    debug_dir=None,
 ):
     segmentation_model = segmentation_model.to(device)
     segmentation_model.eval()
     all_metric_values = []
+    debug_count = 0
     metric_logger = MetricLogger(delimiter="  ")
 
     for batch_img, (_, gt) in metric_logger.log_every(test_dataloader, 10, header="Validation: "):
@@ -68,6 +74,27 @@ def evaluate_segmentation_model(
             aggregated_preds += prediction.detach().to(device="cpu", dtype=aggregated_preds.dtype)
             del prediction
         aggregated_preds = (aggregated_preds / len(batch_img)).argmax(dim=1, keepdim=True).to(device)
+        if debug_dir and debug_count < 10 and distributed.is_main_process():
+            folder = Path(debug_dir)
+            folder.mkdir(parents=True, exist_ok=True)
+            truth = gt.cpu().numpy()
+            predicted = aggregated_preds[0, 0].cpu().numpy()
+            Image.fromarray(truth.astype(np.uint8)).save(folder / f"{debug_count:02d}_true_ids.png")
+            Image.fromarray(predicted.astype(np.uint8)).save(folder / f"{debug_count:02d}_pred_ids.png")
+            # Use one shared palette for truth and prediction (class 0 is black).
+            palette = np.array([[0,0,0],[230,70,70],[70,200,90],[70,120,240],[240,200,50]], dtype=np.uint8)
+            if num_classes <= len(palette):
+                Image.fromarray(palette[np.clip(truth, 0, len(palette)-1)]).save(folder / f"{debug_count:02d}_true_color.png")
+                Image.fromarray(palette[predicted]).save(folder / f"{debug_count:02d}_pred_color.png")
+            base = test_dataloader.dataset.dataset if hasattr(test_dataloader.dataset, "dataset") else None
+            mean = torch.tensor([.485,.456,.406]).view(3,1,1)
+            std = torch.tensor([.229,.224,.225]).view(3,1,1)
+            original = (batch_img[0][0].float().cpu() * std + mean).clamp(0,1)
+            Image.fromarray((original.permute(1,2,0).numpy()*255).astype(np.uint8)).save(folder / f"{debug_count:02d}_image.png")
+            stats = {"true_counts": dict(zip(*[v.tolist() for v in np.unique(truth, return_counts=True)])),
+                     "pred_counts": dict(zip(*[v.tolist() for v in np.unique(predicted, return_counts=True)]))}
+            (folder / f"{debug_count:02d}_counts.json").write_text(json.dumps(stats, indent=2))
+            debug_count += 1
         intersect_and_union = calculate_intersect_and_union(
             aggregated_preds[0],
             gt,
@@ -155,4 +182,5 @@ def test_segmentation(backbone, config):
         autocast_dtype=config.model_dtype.autocast_dtype,
         inference_mode=config.eval.mode,
         reduce_zero_label=config.eval.reduce_zero_label,
+        debug_dir=Path(config.output_dir) / "prediction_check",
     )

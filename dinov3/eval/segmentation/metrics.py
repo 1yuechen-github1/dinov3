@@ -146,7 +146,10 @@ def total_area_to_metrics(
         elif metric == "fscore":
             precision = total_area_intersect / total_area_pred_label
             recall = total_area_intersect / total_area_label
-            f_value = torch.tensor([f_score(x[0], x[1], beta) for x in zip(precision, recall)])
+            # Count missed/unpredicted classes as zero, rather than dropping
+            # their undefined precision from macro F1 while Dice includes them.
+            denominator = beta**2 * total_area_label + total_area_pred_label
+            f_value = (1 + beta**2) * total_area_intersect / denominator
             ret_metrics["fscore"] = f_value
             ret_metrics["precision"] = precision
             ret_metrics["recall"] = recall
