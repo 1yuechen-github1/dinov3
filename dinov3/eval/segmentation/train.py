@@ -263,6 +263,32 @@ def train_segmentation(
     global_step = 0
     global_best_metric_values = {metric: 0.0 for metric in SEGMENTATION_METRICS}
 
+    if config.resume_from:
+        checkpoint = torch.load(config.resume_from, map_location="cpu", weights_only=False)
+        segmentation_model.module.load_state_dict(checkpoint["model"], strict=False)
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        scheduler.load_state_dict(checkpoint["scheduler"])
+        if scaler is not None and checkpoint.get("scaler") is not None:
+            scaler.load_state_dict(checkpoint["scaler"])
+        global_step = checkpoint["global_step"]
+        global_best_metric_values = checkpoint.get("best_metrics", global_best_metric_values)
+        logger.info(f"Resuming segmentation training at step {global_step}")
+
+    def save_training_checkpoint(filename):
+        if distributed.is_main_process():
+            path = os.path.join(config.output_dir, filename)
+            torch.save({
+                "model": {k: v.detach().cpu() for k, v in segmentation_model.module.state_dict().items()
+                          if "segmentation_model.1" in k},
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "scaler": scaler.state_dict() if scaler is not None else None,
+                "global_step": global_step,
+                "best_metrics": global_best_metric_values,
+            }, path + ".tmp")
+            os.replace(path + ".tmp", path)
+            logger.info(f"Saved checkpoint at step {global_step}: {path}")
+
     # 5- train the model
     metric_logger = MetricLogger(delimiter="  ")
     metric_logger.add_meter("loss", SmoothedValue(window_size=4, fmt="{value:.3f}"))
@@ -307,9 +333,10 @@ def train_segmentation(
             if is_better:
                 logger.info(f"New best metrics at Step {global_step}: {best_metric_values_dict}")
                 global_best_metric_values = best_metric_values_dict
+                save_training_checkpoint("model_best.pth")
 
         # one last validation only if the number of total iterations is NOT divisible by eval interval:
-        if total_iter % config.eval.eval_interval:
+        if global_step == total_iter and total_iter % config.eval.eval_interval:
             is_better, best_metric_values_dict = validate(
                 segmentation_model,
                 val_dataloader,
@@ -326,7 +353,11 @@ def train_segmentation(
             if is_better:
                 logger.info(f"New best metrics at Step {global_step}: {best_metric_values_dict}")
                 global_best_metric_values = best_metric_values_dict
+                save_training_checkpoint("model_best.pth")
+        if config.save_interval > 0 and global_step % config.save_interval == 0:
+            save_training_checkpoint("model_latest.pth")
     logger.info("Training is done!")
+    save_training_checkpoint("model_latest.pth")
     # segmentation_model is a module list of [backbone, decoder]
     # Only save the decoder head
     torch.save(

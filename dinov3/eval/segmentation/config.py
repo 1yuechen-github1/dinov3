@@ -124,3 +124,5 @@ class SegmentationConfig:
     # Additional Parameters
     output_dir: str | None = None
     load_from: str | None = None  # path to .pt checkpoint to resume training from or evaluate from
+    resume_from: str | None = None  # Resume training (load_from is evaluation-only).
+    save_interval: int = 500

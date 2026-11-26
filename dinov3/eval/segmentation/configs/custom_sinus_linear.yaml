@@ -24,6 +24,9 @@ transforms:
 eval:
   mode: whole
   use_tta: false
+  reduce_zero_label: false
+  eval_interval: 500
+save_interval: 500
 train:
   celoss_weight: 1.0
   # CustomSinus masks are integer class-id maps (0/1/2), not one-hot masks.
