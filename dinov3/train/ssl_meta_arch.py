@@ -5,6 +5,7 @@
 
 import gc
 import logging
+from pathlib import Path
 from functools import partial
 
 import torch
@@ -24,6 +25,41 @@ from dinov3.train.param_groups import fuse_params_groups, get_params_groups_with
 from dinov3.utils import count_parameters
 
 logger = logging.getLogger("dinov3")
+
+
+def load_pretrained_backbone(backbone, weights_path):
+    """Load consolidated backbone weights, including into an FSDP2 backbone."""
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
+
+    path = Path(weights_path).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"student.pretrained_weights does not exist: {path}")
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    state = checkpoint
+    for key in ("teacher", "state_dict", "model"):
+        if isinstance(state, dict) and key in state:
+            state = state[key]
+            break
+    state = {k.replace("_checkpoint_wrapped_module.", "").removeprefix("module."): v
+             for k, v in state.items()}
+    # Support exported teacher.backbone and consolidated training checkpoints.
+    for prefix in ("model_ema.backbone.", "teacher.backbone.", "student.backbone.", "backbone."):
+        if any(k.startswith(prefix) for k in state):
+            state = {k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}
+            break
+    expected = set(backbone.state_dict())
+    ignored = [k for k in state if k not in expected
+               and (k == "storage_tokens" or k.endswith(".bias_mask"))]
+    if ignored:
+        logger.warning("Pretrained architecture differs: ignoring %s. Match n_storage_tokens/mask_k_bias "
+                       "to the source model to preserve its architecture.", ignored)
+        state = {k: v for k, v in state.items() if k not in ignored}
+    missing, unexpected = expected - state.keys(), state.keys() - expected
+    if missing or unexpected:
+        raise RuntimeError(f"Pretrained backbone mismatch: missing={sorted(missing)}, unexpected={sorted(unexpected)}")
+    set_model_state_dict(backbone, state, options=StateDictOptions(full_state_dict=True, strict=True))
+    logger.info("Loaded pretrained student backbone: %s (%d tensors); DINO/iBOT heads initialized randomly",
+                path, len(state))
 
 
 class SSLMetaArch(nn.Module):
@@ -302,6 +338,11 @@ class SSLMetaArch(nn.Module):
         self.student.backbone.init_weights()
         self.student.dino_head.init_weights()
         self.student.ibot_head.init_weights()
+        weights_path = self.cfg.student.get("pretrained_weights", "")
+        if weights_path and str(weights_path).strip():
+            load_pretrained_backbone(self.student.backbone, weights_path)
+        else:
+            logger.info("student.pretrained_weights is empty: randomly initialized student backbone")
         self.dino_loss.init_weights()
         self.ibot_patch_loss.init_weights()
         self.model_ema.load_state_dict(self.student.state_dict())
